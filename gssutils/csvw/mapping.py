@@ -134,8 +134,10 @@ class CSVWMapping:
                 # Where a single field can denote multiple mappings we need to consider each.
                 # eg: "Value" can represent multiple combinations of measure and unit
                 # each of which needs defining.
+                is_multi_measures = False
                 objects_to_map = []
                 if isinstance(self._mapping[name], list):
+                    is_multi_measures = True
                     if name != 'Value':
                         raise Exception('Only the "Value" field map should contain a list, but you have" \
                                     " provided one for "{}.'.format(name))
@@ -242,11 +244,20 @@ class CSVWMapping:
                             )
                         ))
                     elif "unit" in obj and "measure" in obj:
-                        self._columns[name] = self._columns[name]._replace(propertyUrl=obj["measure"])
+
+                        # TODO - Are we setting this every time? think so
+                        # TODO - remove hard coded url
+                        if is_multi_measures:
+                            self._columns[name] = self._columns[name]._replace(propertyUrl=r"http://gss-data.org.uk/def/measure/{measure_type}")
+                        else:
+                            self._columns[name] = self._columns[name]._replace(propertyUrl=obj["measure"])
+
                         if "datatype" in obj:
                             self._columns[name] = self._columns[name]._replace(datatype=obj["datatype"])
                         else:
                             self._columns[name] = self._columns[name]._replace(datatype="number")
+
+                        # TODO - get rid of the same unit/measure getting written more than once
                         self._components.extend([
                             DimensionComponent(
                                 at_id=self.join_dataset_uri("#component/measure_type"),
@@ -271,17 +282,20 @@ class CSVWMapping:
                                 )
                             )
                         ])
+
+                        # Create virtual measures and units
+                        # TODO - remove nasty hard coded raw urls
                         self._columns["virt_unit"] = Column(
                             name="virt_unit",
                             virtual=True,
                             propertyUrl=URI("http://purl.org/linked-data/sdmx/2009/attribute#unitMeasure"),
-                            valueUrl=URI(obj["unit"])
+                            valueUrl=URI(obj["unit"]) if not is_multi_measures else URI(r"http://gss-data.org.uk/def/concept/measurement-units/{unit}")
                         )
                         self._columns["virt_measure"] = Column(
                             name="virt_measure",
                             virtual=True,
                             propertyUrl=URI("http://purl.org/linked-data/cube#measureType"),
-                            valueUrl=URI(obj["measure"])
+                            valueUrl=URI(obj["measure"]) if not is_multi_measures else URI(r"http://gss-data.org.uk/def/measure/{measure_type}")
                         )
             else:
                 # assume local dimension, with optional definition
@@ -320,6 +334,7 @@ class CSVWMapping:
             propertyUrl=URI("rdf:type"),
             valueUrl=URI("qb:Observation")
         )
+
         self._validate()
         return {
             "@context": ["http://www.w3.org/ns/csvw", {"@language": "en"}],
