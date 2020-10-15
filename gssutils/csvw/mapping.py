@@ -6,6 +6,7 @@ from io import TextIOBase
 from pathlib import Path
 from typing import List, Optional, Dict, TextIO, Any, Set, Union, NamedTuple
 from urllib.parse import urljoin
+import pandas as pd
 
 from uritemplate import variables
 
@@ -22,6 +23,12 @@ default_map = {
         "datatype": "integer"
     }
 }
+
+class MeasureDefinitionError(Exception):
+    """ Raised when a multiple measures datacube has been indicated, but has not been correctly defined."""
+
+    def __init__(self, message):
+        self.message = message
 
 class MapObject(NamedTuple):
     """
@@ -46,6 +53,8 @@ class CSVWMapping:
         self._metadata_filename: Optional[URI] = None
         self._dataset_uri: Optional[URI] = None
         self._foreign_keys: List[ForeignKey] = None
+        self._has_multiple_measures: bool = False
+        self._multiple_measures_map: List[MapObject] = []
 
     @staticmethod
     def namify(column_header: str):
@@ -127,178 +136,116 @@ class CSVWMapping:
         if not set(prefix_map.keys()).issuperset(used_prefixes):
             logging.error(f"Unknown prefixes used: {used_prefixes.difference(prefix_map.keys())}")
 
-    def _as_csvw_object(self):
-        for name in self._column_names:
-            if self._mapping is not None and name in self._mapping and isinstance(self._mapping[name], (dict, list)):
+    def _prep_multicube(self):
+        """
+        If the csv represents a datacube with multiple measures, set the additional attributes required
+        to correctly generate the csvw.
+        """
 
-                # Where a single field can denote multiple mappings we need to consider each.
-                # eg: "Value" can represent multiple combinations of measure and unit
-                # each of which needs defining.
-                is_multi_measures = False
-                objects_to_map = []
-                if isinstance(self._mapping[name], list):
-                    is_multi_measures = True
-                    if name != 'Value':
-                        raise Exception('Only the "Value" field map should contain a list, but you have" \
-                                    " provided one for "{}.'.format(name))
+        # Confirm the csv has the columns that it should have
+        required_columns = ["Measure Type", "Unit"]
+        for req_col in required_columns:
+            if req_col not in self._column_names:
+                raise MeasureDefinitionError('To create a multiple measures dataset, you need to include " \
+                    " all of these columns: "{}". You do not have "{}"'.format(",".join(required_columns), 
+                    req_col))
 
-                    for sub_obj in self._mapping[name]:
-                        map_obj = MapObject(name=name, obj=sub_obj)
-                        objects_to_map.append(map_obj)
+        for col in ["Measure Type"]:
+            unique_values = pd.read_csv(self._csv_filename , usecols=[col])[col].unique().tolist()
+            self._multiple_measures_map += [MapObject(name="Value", obj={"measure":x}) for x in unique_values]
 
-                else:
-                    map_obj = MapObject(name=name, obj=self._mapping[name])
-                    objects_to_map.append(map_obj)
+        self._has_multiple_measures = True
 
-                for map_obj in objects_to_map:
+    def _create_csvw_measures(self, name=None, obj=None):
+        """
+        Creates the csvw components required to represent the measures and units used by the datacube.
+        Triggered by two mutually exclusive scenarios:
+        1.) A single measure dataset, indicated by passing both a name and an obj to this method.
+        2.) A multiple measures datasets, indicated by passing neither,
+        """
 
-                    name = map_obj.name
-                    obj = map_obj.obj
+        # TODO - we're repacking this? really?
+        map_objects = []
+        if self._has_multiple_measures:
+            map_objects = self._multiple_measures_map
+        else:
+            map_objects.append(MapObject(name=name, obj=obj))
 
-                    if "dimension" in obj and "value" in obj:
-                        self._keys.append(self._columns[name].name)
-                        self._columns[name] = self._columns[name]._replace(
-                            propertyUrl=URI(obj["dimension"]),
-                            valueUrl=URI(obj["value"])
-                        )
-                        self._components.append(DimensionComponent(
-                            at_id=self.join_dataset_uri(f"#component/{pathify(name)}"),
-                            qb_componentProperty=Resource(at_id=URI(obj["dimension"])),
-                            qb_dimension=DimensionProperty(
-                                at_id=URI(obj["dimension"]),
-                                rdfs_range=Resource(
-                                    at_id=self.join_dataset_uri(f"#class/{CSVWMapping.classify(name)}")
-                                )
-                            )
-                        ))
-                    elif "parent" in obj and "value" in obj:
-                        # a local dimension that has a super property
-                        description: Optional[str] = None
-                        if "description" in obj:
-                            description = obj["description"]
-                        source: Optional[URI] = None
-                        if "source" in obj:
-                            source = URI(obj["source"])
-                        self._keys.append(self._columns[name].name)
-                        self._columns[name] = self._columns[name]._replace(
-                            propertyUrl=self.join_dataset_uri(f"#dimension/{pathify(name)}"),
-                            valueUrl=URI(obj["value"])
-                        )
-                        self._components.append(DimensionComponent(
-                            at_id=self.join_dataset_uri(f"#component/{pathify(name)}"),
-                            qb_componentProperty=Resource(at_id=self.join_dataset_uri(f"#dimension/{pathify(name)}")),
-                            qb_dimension=DimensionProperty(
-                                at_id=self.join_dataset_uri(f"#dimension/{pathify(name)}"),
-                                rdfs_range=Resource(
-                                    at_id=self.join_dataset_uri(f"#class/{CSVWMapping.classify(name)}")
-                                ),
-                                qb_codeList=Resource(
-                                    at_id=self.join_dataset_uri(f"#scheme/{pathify(name)}")
-                                ),
-                                rdfs_label=name,
-                                rdfs_comment=description,
-                                rdfs_subPropertyOf=Resource(at_id=URI(obj["parent"])),
-                                rdfs_isDefinedBy=Resource(at_id=source)
-                            )
-                        ))
-                    elif "description" in obj:
-                        # local dimension with a definition and maybe source of the definition
-                        source: Optional[URI] = None
-                        if "source" in obj:
-                            source = URI(obj["source"])
-                        self._keys.append(self._columns[name].name)
-                        self._columns[name] = self._columns[name]._replace(
-                            propertyUrl=self.join_dataset_uri(f"#dimension/{pathify(name)}"),
-                            valueUrl=self.join_dataset_uri(f"#concept/{pathify(name)}/{{{self._columns[name].name}}}")
-                        )
-                        self._components.append(DimensionComponent(
-                            at_id=self.join_dataset_uri(f"#component/{pathify(name)}"),
-                            qb_componentProperty=Resource(at_id=self.join_dataset_uri(f"#dimension/{pathify(name)}")),
-                            qb_dimension=DimensionProperty(
-                                at_id=self.join_dataset_uri(f"#dimension/{pathify(name)}"),
-                                rdfs_range=Resource(
-                                    at_id=self.join_dataset_uri(f"#class/{CSVWMapping.classify(name)}")
-                                ),
-                                qb_codeList=Resource(
-                                    at_id=self.join_dataset_uri(f"#scheme/{pathify(name)}")
-                                ),
-                                rdfs_label=name,
-                                rdfs_comment=obj["description"],
-                                rdfs_isDefinedBy=Resource(at_id=source)
-                            )
-                        ))
+        for map_obj in map_objects:
 
-                    elif "attribute" in obj and "value" in obj:
-                        self._columns[name] = self._columns[name]._replace(
-                            propertyUrl=URI(obj["attribute"]),
-                            valueUrl=URI(obj["value"])
-                        )
-                        self._components.append(AttributeComponent(
-                            at_id=self.join_dataset_uri(f"#component/{pathify(name)}"),
-                            qb_componentProperty=Resource(at_id=URI(obj["attribute"])),
-                            qb_attribute=AttributeProperty(
-                                at_id=URI(obj["attribute"]),
-                                rdfs_range=Resource(
-                                    at_id=self.join_dataset_uri(f"#class/{CSVWMapping.classify(name)}")
-                                )
-                            )
-                        ))
-                    elif "unit" in obj and "measure" in obj:
+            name = map_obj.name
+            obj = map_obj.obj
 
-                        # TODO - Are we setting this every time? think so
-                        # TODO - remove hard coded url
-                        if is_multi_measures:
-                            self._columns[name] = self._columns[name]._replace(propertyUrl=r"http://gss-data.org.uk/def/measure/{measure_type}")
-                        else:
-                            self._columns[name] = self._columns[name]._replace(propertyUrl=obj["measure"])
-
-                        if "datatype" in obj:
-                            self._columns[name] = self._columns[name]._replace(datatype=obj["datatype"])
-                        else:
-                            self._columns[name] = self._columns[name]._replace(datatype="number")
-
-                        # TODO - get rid of the same unit/measure getting written more than once
-                        self._components.extend([
-                            DimensionComponent(
-                                at_id=self.join_dataset_uri("#component/measure_type"),
-                                qb_componentProperty=Resource(at_id=URI("http://purl.org/linked-data/cube#measureType")),
-                                qb_dimension=DimensionProperty(
-                                    at_id=URI("http://purl.org/linked-data/cube#measureType"),
-                                    rdfs_range=Resource(at_id=URI("http://purl.org/linked-data/cube#MeasureProperty"))
-                                )
-                            ),
-                            MeasureComponent(
-                                at_id=self.join_dataset_uri(f"#component/{pathify(name)}"),
-                                qb_componentProperty=Resource(at_id=obj["measure"]),
-                                qb_measure=MeasureProperty(at_id=obj["measure"])
-                            ),
-                            AttributeComponent(
-                                at_id=self.join_dataset_uri(f"#component/unit"),
-                                qb_componentProperty=Resource(
-                                    at_id=URI("http://purl.org/linked-data/sdmx/2009/attribute#unitMeasure")
-                                ),
-                                qb_attribute=AttributeProperty(
-                                    at_id=URI("http://purl.org/linked-data/sdmx/2009/attribute#unitMeasure")
-                                )
-                            )
-                        ])
-
-                        # Create virtual measures and units
-                        # TODO - remove nasty hard coded raw urls
-                        self._columns["virt_unit"] = Column(
-                            name="virt_unit",
-                            virtual=True,
-                            propertyUrl=URI("http://purl.org/linked-data/sdmx/2009/attribute#unitMeasure"),
-                            valueUrl=URI(obj["unit"]) if not is_multi_measures else URI(r"http://gss-data.org.uk/def/concept/measurement-units/{unit}")
-                        )
-                        self._columns["virt_measure"] = Column(
-                            name="virt_measure",
-                            virtual=True,
-                            propertyUrl=URI("http://purl.org/linked-data/cube#measureType"),
-                            valueUrl=URI(obj["measure"]) if not is_multi_measures else URI(r"http://gss-data.org.uk/def/measure/{measure_type}")
-                        )
+            if self._has_multiple_measures:
+                self._columns[name] = self._columns[name]._replace(propertyUrl=r"http://gss-data.org.uk/def/measure/{measure_type}")
             else:
-                # assume local dimension, with optional definition
+                self._columns[name] = self._columns[name]._replace(propertyUrl=obj["measure"])
+
+            if "datatype" in obj:
+                self._columns[name] = self._columns[name]._replace(datatype=obj["datatype"])
+            else:
+                self._columns[name] = self._columns[name]._replace(datatype="number")
+
+            # TODO - get rid of the same unit/measure getting written more than once
+            self._components.extend([
+                DimensionComponent(
+                    at_id=self.join_dataset_uri("#component/measure_type"),
+                    qb_componentProperty=Resource(at_id=URI("http://purl.org/linked-data/cube#measureType")),
+                    qb_dimension=DimensionProperty(
+                        at_id=URI("http://purl.org/linked-data/cube#measureType"),
+                        rdfs_range=Resource(at_id=URI("http://purl.org/linked-data/cube#MeasureProperty"))
+                    )
+                ),
+                MeasureComponent(
+                    at_id=self.join_dataset_uri(f"#component/{pathify(name)}"),
+                    qb_componentProperty=Resource(at_id=obj["measure"]),
+                    qb_measure=MeasureProperty(at_id=obj["measure"])
+                ),
+                AttributeComponent(
+                    at_id=self.join_dataset_uri(f"#component/unit"),
+                    qb_componentProperty=Resource(
+                        at_id=URI("http://purl.org/linked-data/sdmx/2009/attribute#unitMeasure")
+                    ),
+                    qb_attribute=AttributeProperty(
+                        at_id=URI("http://purl.org/linked-data/sdmx/2009/attribute#unitMeasure")
+                    )
+                )
+            ])
+
+        # Create virtual measures and units
+        # TODO - remove nasty hard coded raw urls
+        self._columns["virt_unit"] = Column(
+            name="virt_unit",
+            virtual=True,
+            propertyUrl=URI("http://purl.org/linked-data/sdmx/2009/attribute#unitMeasure"),
+            valueUrl=URI(obj["unit"]) if not self._has_multiple_measures else URI(r"http://gss-data.org.uk/def/concept/measurement-units/{unit}")
+        )
+        self._columns["virt_measure"] = Column(
+            name="virt_measure",
+            virtual=True,
+            propertyUrl=URI("http://purl.org/linked-data/cube#measureType"),
+            valueUrl=URI(obj["measure"]) if not self._has_multiple_measures else URI(r"http://gss-data.org.uk/def/measure/{measure_type}")
+        )
+
+    def _as_csvw_object(self):
+
+        # Is this a multi measure dataset?
+        if "Measure Type" in self._column_names or "Unit" in self._column_names:
+            self._prep_multicube()
+
+        # If multiple measures, we don't map the value column from the csv
+        if self._has_multiple_measures:
+            self._column_names = [x for x in self._column_names if x != "Value"]
+
+        objects_to_map = []
+        for name in self._column_names:
+            # If the column name appears in the map, we've some sort of definition of what it is
+            # so create a 'MapObject' for processing later.
+            if self._mapping is not None and name in self._mapping and isinstance(self._mapping[name], dict):
+                map_obj = MapObject(name=name, obj=self._mapping[name])
+                objects_to_map.append(map_obj)
+            else:
+                # otherwise assume local dimension, with optional definition
                 description: Optional[str] = None
                 if self._mapping is not None and name in self._mapping and isinstance(self._mapping[name], str):
                     description = self._mapping[name]
@@ -322,6 +269,112 @@ class CSVWMapping:
                         rdfs_comment=description
                     )
                 ))
+        
+        for map_obj in objects_to_map:
+
+            # TODO - call these directly, i.e "map_obj.name" etc
+            name = map_obj.name
+            obj = map_obj.obj
+
+            if "dimension" in obj and "value" in obj:
+                self._keys.append(self._columns[name].name)
+                self._columns[name] = self._columns[name]._replace(
+                    propertyUrl=URI(obj["dimension"]),
+                    valueUrl=URI(obj["value"])
+                )
+                self._components.append(DimensionComponent(
+                    at_id=self.join_dataset_uri(f"#component/{pathify(name)}"),
+                    qb_componentProperty=Resource(at_id=URI(obj["dimension"])),
+                    qb_dimension=DimensionProperty(
+                        at_id=URI(obj["dimension"]),
+                        rdfs_range=Resource(
+                            at_id=self.join_dataset_uri(f"#class/{CSVWMapping.classify(name)}")
+                        )
+                    )
+                ))
+            elif "parent" in obj and "value" in obj:
+                # a local dimension that has a super property
+                description: Optional[str] = None
+                if "description" in obj:
+                    description = obj["description"]
+                source: Optional[URI] = None
+                if "source" in obj:
+                    source = URI(obj["source"])
+                self._keys.append(self._columns[name].name)
+                self._columns[name] = self._columns[name]._replace(
+                    propertyUrl=self.join_dataset_uri(f"#dimension/{pathify(name)}"),
+                    valueUrl=URI(obj["value"])
+                )
+                self._components.append(DimensionComponent(
+                    at_id=self.join_dataset_uri(f"#component/{pathify(name)}"),
+                    qb_componentProperty=Resource(at_id=self.join_dataset_uri(f"#dimension/{pathify(name)}")),
+                    qb_dimension=DimensionProperty(
+                        at_id=self.join_dataset_uri(f"#dimension/{pathify(name)}"),
+                        rdfs_range=Resource(
+                            at_id=self.join_dataset_uri(f"#class/{CSVWMapping.classify(name)}")
+                        ),
+                        qb_codeList=Resource(
+                            at_id=self.join_dataset_uri(f"#scheme/{pathify(name)}")
+                        ),
+                        rdfs_label=name,
+                        rdfs_comment=description,
+                        rdfs_subPropertyOf=Resource(at_id=URI(obj["parent"])),
+                        rdfs_isDefinedBy=Resource(at_id=source)
+                    )
+                ))
+            elif "description" in obj:
+                # local dimension with a definition and maybe source of the definition
+                source: Optional[URI] = None
+                if "source" in obj:
+                    source = URI(obj["source"])
+                self._keys.append(self._columns[name].name)
+                self._columns[name] = self._columns[name]._replace(
+                    propertyUrl=self.join_dataset_uri(f"#dimension/{pathify(name)}"),
+                    valueUrl=self.join_dataset_uri(f"#concept/{pathify(name)}/{{{self._columns[name].name}}}")
+                )
+                self._components.append(DimensionComponent(
+                    at_id=self.join_dataset_uri(f"#component/{pathify(name)}"),
+                    qb_componentProperty=Resource(at_id=self.join_dataset_uri(f"#dimension/{pathify(name)}")),
+                    qb_dimension=DimensionProperty(
+                        at_id=self.join_dataset_uri(f"#dimension/{pathify(name)}"),
+                        rdfs_range=Resource(
+                            at_id=self.join_dataset_uri(f"#class/{CSVWMapping.classify(name)}")
+                        ),
+                        qb_codeList=Resource(
+                            at_id=self.join_dataset_uri(f"#scheme/{pathify(name)}")
+                        ),
+                        rdfs_label=name,
+                        rdfs_comment=obj["description"],
+                        rdfs_isDefinedBy=Resource(at_id=source)
+                    )
+                ))
+
+            elif "attribute" in obj and "value" in obj:
+                self._columns[name] = self._columns[name]._replace(
+                    propertyUrl=URI(obj["attribute"]),
+                    valueUrl=URI(obj["value"])
+                )
+                self._components.append(AttributeComponent(
+                    at_id=self.join_dataset_uri(f"#component/{pathify(name)}"),
+                    qb_componentProperty=Resource(at_id=URI(obj["attribute"])),
+                    qb_attribute=AttributeProperty(
+                        at_id=URI(obj["attribute"]),
+                        rdfs_range=Resource(
+                            at_id=self.join_dataset_uri(f"#class/{CSVWMapping.classify(name)}")
+                        )
+                    )
+                ))
+            elif "unit" in obj and "measure" in obj:
+                if self._has_multiple_measures:
+                    raise MeasureDefinitionError('Aborting. You can either define a combination of ' \
+                        '"measure" and "unit" via a "Value" field in the mapping, or include a ' \
+                        'Measure Type" and "Unit" column in the csv. You cannot do both.')
+                self._create_csvw_measures(name=name, obj=obj)
+
+        # If the cube has multiple measures, go make them
+        if self._has_multiple_measures:
+            self._create_csvw_measures()
+            
         self._columns["virt_dataset"] = Column(
             name="virt_dataset",
             virtual=True,
