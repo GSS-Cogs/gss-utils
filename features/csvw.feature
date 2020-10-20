@@ -25,12 +25,12 @@ Feature: Create CSVW metadata
       @prefix cl_area: <http://gss-data.org.uk/def/concept-scheme/sdmx-bop/cl_area/> .
 
       <#dataset> a qb:DataSet ;
-            qb:structure <#structure> .
+        qb:structure <#structure> .
 
       <#structure> a qb:DataStructureDefinition ;
         qb:component <#component/direction>, <#component/industry>, <#component/marker>, <#component/measure_type>,
                      <#component/commodity>, <#component/country>, <#component/value>, <#component/year>, <#component/unit> .
-    
+
       <#component/direction> a qb:ComponentSpecification ;
         qb:dimension gss-dim:flow-directions .
 

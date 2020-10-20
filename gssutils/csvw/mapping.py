@@ -38,7 +38,7 @@ class MapObject(NamedTuple):
     obj: dict
 
 class CSVWMapping:
-    def __init__(self):
+    def __init__(self, data_root="http://gss-data.org.uk/def"):
         self._csv_filename: Optional[URI] = None
         self._csv_stream: Optional[TextIO] = None
         self._mapping: Dict[str, Any] = {}
@@ -55,6 +55,7 @@ class CSVWMapping:
         self._foreign_keys: List[ForeignKey] = None
         self._has_multiple_measures: bool = False
         self._multiple_measures_map: List[MapObject] = []
+        self._data_root: str = data_root
 
     @staticmethod
     def namify(column_header: str):
@@ -138,7 +139,7 @@ class CSVWMapping:
 
     def _prep_multicube(self):
         """
-        If the csv represents a datacube with multiple measures, set the additional attributes required
+        If the csv represents a datacube with multiple measures, gather the additional attributes required
         to correctly generate the csvw.
         """
 
@@ -164,29 +165,24 @@ class CSVWMapping:
         2.) A multiple measures datasets, indicated by passing neither,
         """
 
-        # TODO - we're repacking this? really?
-        map_objects = []
+        print("REGISTRY IS: .... ", self._registry)
+
         if self._has_multiple_measures:
             map_objects = self._multiple_measures_map
         else:
-            map_objects.append(MapObject(name=name, obj=obj))
+            map_objects = [MapObject(name=name, obj=obj)] # Just the one measure to worry about
 
         for map_obj in map_objects:
-
-            name = map_obj.name
-            obj = map_obj.obj
-
             if self._has_multiple_measures:
-                self._columns[name] = self._columns[name]._replace(propertyUrl=r"http://gss-data.org.uk/def/measure/{measure_type}")
+                self._columns[map_obj.name] = self._columns[map_obj.name]._replace(propertyUrl=URI("{}/measure/{{measure_type}}".format(self._data_root)))
             else:
-                self._columns[name] = self._columns[name]._replace(propertyUrl=obj["measure"])
+                self._columns[map_obj.name] = self._columns[map_obj.name]._replace(propertyUrl=map_obj.obj["measure"])
 
-            if "datatype" in obj:
-                self._columns[name] = self._columns[name]._replace(datatype=obj["datatype"])
+            if "datatype" in map_obj.obj:
+                self._columns[map_obj.name] = self._columns[map_obj.name]._replace(datatype=map_obj.obj["datatype"])
             else:
-                self._columns[name] = self._columns[name]._replace(datatype="number")
+                self._columns[map_obj.name] = self._columns[map_obj.name]._replace(datatype="number")
 
-            # TODO - get rid of the same unit/measure getting written more than once
             self._components.extend([
                 DimensionComponent(
                     at_id=self.join_dataset_uri("#component/measure_type"),
@@ -197,9 +193,9 @@ class CSVWMapping:
                     )
                 ),
                 MeasureComponent(
-                    at_id=self.join_dataset_uri(f"#component/{pathify(name)}"),
-                    qb_componentProperty=Resource(at_id=obj["measure"]),
-                    qb_measure=MeasureProperty(at_id=obj["measure"])
+                    at_id=self.join_dataset_uri(f"#component/{pathify(map_obj.name)}"),
+                    qb_componentProperty=Resource(at_id=map_obj.obj["measure"]),
+                    qb_measure=MeasureProperty(at_id=map_obj.obj["measure"])
                 ),
                 AttributeComponent(
                     at_id=self.join_dataset_uri(f"#component/unit"),
@@ -213,18 +209,17 @@ class CSVWMapping:
             ])
 
         # Create virtual measures and units
-        # TODO - remove nasty hard coded raw urls
         self._columns["virt_unit"] = Column(
             name="virt_unit",
             virtual=True,
             propertyUrl=URI("http://purl.org/linked-data/sdmx/2009/attribute#unitMeasure"),
-            valueUrl=URI(obj["unit"]) if not self._has_multiple_measures else URI(r"http://gss-data.org.uk/def/concept/measurement-units/{unit}")
+            valueUrl=URI(obj["unit"]) if not self._has_multiple_measures else URI("{}/concept/measurement-units/{{unit}}".format(self._data_root))
         )
         self._columns["virt_measure"] = Column(
             name="virt_measure",
             virtual=True,
             propertyUrl=URI("http://purl.org/linked-data/cube#measureType"),
-            valueUrl=URI(obj["measure"]) if not self._has_multiple_measures else URI(r"http://gss-data.org.uk/def/measure/{measure_type}")
+            valueUrl=URI(obj["measure"]) if not self._has_multiple_measures else URI("{}/measure/{{measure_type}}".format(self._data_root))
         )
 
     def _as_csvw_object(self):
