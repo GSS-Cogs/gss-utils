@@ -25,19 +25,19 @@ Feature: Create CSVW metadata
       @prefix cl_area: <http://gss-data.org.uk/def/concept-scheme/sdmx-bop/cl_area/> .
 
       <#dataset> a qb:DataSet ;
-        qb:structure <#structure> .
+            qb:structure <#structure> .
 
       <#structure> a qb:DataStructureDefinition ;
         qb:component <#component/direction>, <#component/industry>, <#component/marker>, <#component/measure_type>,
                      <#component/commodity>, <#component/country>, <#component/value>, <#component/year>, <#component/unit> .
-
+    
       <#component/direction> a qb:ComponentSpecification ;
         qb:dimension gss-dim:flow-directions .
 
       <#component/unit> a qb:ComponentSpecification ;
         qb:attribute sdmx-a:unitMeasure .
 
-      <http://gss-data.org.uk/data/gss_data/trade/ons-uk-trade-in-goods-by-industry-country-and-commodity/2008/D5/46/IM/T> a qb:Observation ;
+      <http://gss-data.org.uk/data/gss_data/trade/ons-uk-trade-in-goods-by-industry-country-and-commodity/46/T/2008/D5/IM> a qb:Observation ;
           <#dimension/commodity> <http://gss-data.org.uk/data/gss_data/trade/ons-uk-trade-in-goods-by-industry-country-and-commodity#concept/commodity/T> ;
           <#dimension/industry> <http://gss-data.org.uk/data/gss_data/trade/ons-uk-trade-in-goods-by-industry-country-and-commodity#concept/industry/46> ;
           gss-dim:flow-directions <http://gss-data.org.uk/def/concept/flow-directions/IM> ;
@@ -49,6 +49,7 @@ Feature: Create CSVW metadata
           qb:dataSet <http://gss-data.org.uk/data/gss_data/trade/ons-uk-trade-in-goods-by-industry-country-and-commodity#dataset> ;
       .
     """
+    
 
   @skip
   Scenario: Data Cube, metadata and reference data for PMD4
