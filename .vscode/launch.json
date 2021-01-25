@@ -1,0 +1,21 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: Behave current file",
+            "type": "python",
+            "request": "launch",
+            "module": "behave",
+            "console": "integratedTerminal",
+            "env": {
+                "BASE_DIR": "features"
+                   },
+            "args":[
+                "--no-capture",
+                "--no-capture-stderr",
+                "${file}",
+                "--tags=@do",
+            ]
+        }
+    ]
+}
